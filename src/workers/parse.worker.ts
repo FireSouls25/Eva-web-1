@@ -1,17 +1,8 @@
-// Dedicated parse Worker (RF-1, RT-1, RT-2).
-//
-// The orchestrator assigns byte blocks dynamically: workers pull the next
-// block index from a shared atomic counter, so a slow/expensive block never
-// stalls the pool (dynamic scheduling beats a fixed static split). Each
-// worker receives ONLY its byte range plus shared views — it never returns
-// a full copy of the data (RT-2). Line-boundary rules from chunkPlanner are
-// re-applied here on the decoded slice.
-
 export interface ParseRequest {
   kind: 'parse';
   jobId: number;
-  sab: SharedArrayBuffer; // control block: Int32Array [nextBlock, totalBlocks, doneCount]
-  fileSab: SharedArrayBuffer; // whole-file bytes (transferred once, shared)
+  sab: SharedArrayBuffer; 
+  fileSab: SharedArrayBuffer; 
   fileSize: number;
   blocks: { start: number; end: number }[];
   monthStartEpoch: number;
@@ -20,7 +11,7 @@ export interface ParseRequest {
 export interface ParseRow {
   meterHex: string;
   hour: number;
-  energy: number; // NaN when missing
+  energy: number; 
   version: number;
   flags: number;
 }
@@ -48,10 +39,7 @@ self.onmessage = (ev: MessageEvent<ParseRequest>) => {
     const blockIndex = Atomics.add(control, 0, 1);
     if (blockIndex >= msg.blocks.length) break;
     const plan = msg.blocks[blockIndex];
-    // Byte-accurate slicing (chained boundaries): the start always moves
-    // forward to just past the next newline (== previous block's extended
-    // end), and the end extends forward the same way. No lost rows, none
-    // duplicated — see chunkPlanner.alignStartToNewline.
+
     let start = plan.start;
     let end = plan.end;
     if (start !== 0) {
@@ -65,7 +53,7 @@ self.onmessage = (ev: MessageEvent<ParseRequest>) => {
     void findLineEnd;
     const rows: ParseRow[] = [];
     let pos = 0;
-    // Skip CSV header only in the very first block.
+    
     if (blockIndex === 0) {
       const nl = text.indexOf('\n');
       pos = nl === -1 ? text.length : nl + 1;
@@ -75,6 +63,7 @@ self.onmessage = (ev: MessageEvent<ParseRequest>) => {
       if (nl === -1) nl = text.length;
       const line = text.slice(pos, nl);
       pos = nl + 1;
+      
       if (!line) continue;
       const c1 = line.indexOf(',');
       const c2 = line.indexOf(',', c1 + 1);

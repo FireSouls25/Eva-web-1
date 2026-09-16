@@ -1,4 +1,4 @@
-export const COLUMN_BYTES_PER_RECORD = 4 + 2 + 2 + 1 + 3 + 8; // 20
+export const COLUMN_BYTES_PER_RECORD = 4 + 2 + 2 + 1 + 3 + 8; 
 
 export interface ColumnStore {
   buffer: SharedArrayBuffer;

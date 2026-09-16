@@ -4,16 +4,9 @@ Aplicación web (Astro) que concilia ~20 millones de lecturas horarias contra la
 topología eléctrica y produce el plan semanal de inspección — todo dentro del
 navegador, sin instalar software y sin subir datos a ningún servidor.
 
-> UI en español · código en inglés · Node ≥ 22 (este repo se desarrolló con Node 24).
-
 ## Requisitos
 
-- El Node 24 de `Downloads\node-v24.21.0-win-x64\node-v24.21.0-win-x64` (no el del sistema):
-
-```powershell
-& "C:\Users\labinf6.pasto\Downloads\node-v24.21.0-win-x64\node-v24.21.0-win-x64\npm.cmd" install
-& "C:\Users\labinf6.pasto\Downloads\node-v24.21.0-win-x64\node-v24.21.0-win-x64\npm.cmd" run dev
-```
+Node.js 22 o mayor
 
 ## Scripts
 
@@ -24,6 +17,13 @@ navegador, sin instalar software y sin subir datos a ningún servidor.
 | `npm run generate -- --meters 2000 --out ./samples` | Datos sintéticos con fraudes sembrados |
 | `npm run verify-chunks` | Prueba de conteo exacto de filas por bloque (RF-1) |
 
+## Muestra incluida en el sitio
+
+`public/samples/` contiene `lecturas_mes.csv` (200 medidores, ~145 000 filas,
+4,7 MB) y `topologia.csv` con un fraude sembrado conocido. Se despliegan con
+el sitio y la página ofrece el botón **«Usar muestra incluida»** más enlaces
+de descarga, para probar sin tener los archivos reales.
+
 ## Flujo del dato
 
 Archivo local → bloques con corte exacto en `\n` → pool de Workers con reparto
@@ -32,14 +32,6 @@ SharedArrayBuffer → resolución de versiones → imputación por perfil horari
 agregación jerárquica con vigencias (búsqueda binaria) → residual menos pérdida
 técnica → mediana/MAD deslizante 168 h (dos montículos) → montículo top-200 →
 Pearson contra el residual para candidatos.
-
-## Despliegue (URL pública, RT-4/RT-10)
-
-Cualquier hosting estático sirve (`dist/`). Las cabeceras
-`Cross-Origin-Opener-Policy: same-origin` y
-`Cross-Origin-Embedder-Policy: require-corp` ya están declaradas en
-`vercel.json`, `netlify.toml` y `public/_headers`; verifica en consola que
-`crossOriginIsolated === true`.
 
 ## Estructura
 

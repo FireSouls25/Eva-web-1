@@ -35,9 +35,16 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <input id="file-topologia" type="file" accept=".csv" hidden />
         <input id="mes-inicio" type="number" value="1767225600" title="Epoch de la hora 0 del mes" style="width:160px" />
         <button id="btn-procesar">Procesar y generar plan</button>
-        <button id="btn-demo" class="ghost">Probar con muestra sintética</button>
+        <button id="btn-sample">Usar muestra incluida (200 medidores)</button>
+        <button id="btn-demo" class="ghost">Generar muestra grande (2 000)</button>
       </div>
       <p class="hint" id="barra">Sin procesar.</p>
+      <p class="hint">
+        ¿Sin archivos a la mano? La muestra incluida viaja con el sitio:
+        <a href="samples/lecturas_mes.csv" download>lecturas_mes.csv</a> ·
+        <a href="samples/topologia.csv" download>topologia.csv</a>
+        (200 medidores, ~145 000 filas, fraude sembrado conocido).
+      </p>
       <progress id="progreso" max="100" value="0"></progress>
       <div class="kpi">
         <div><small>Transformadores</small><strong id="kpi-trafos">—</strong></div>

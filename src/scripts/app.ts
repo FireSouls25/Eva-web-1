@@ -1,6 +1,3 @@
-// Browser orchestrator: file -> blocks -> worker pool -> ranking (RF-1..RF-8).
-// UI text lives in index.astro (Spanish); all identifiers here are English.
-
 import { planBlocks } from '../engine/chunkPlanner';
 import { MeterHashIndex, encodeMeterId } from '../engine/hashIndex';
 import { VersionResolver, accumulateProfiles } from '../engine/versionResolver';
@@ -46,9 +43,6 @@ let sharedPort: MessagePort | null = null;
 const tabId = Math.random().toString(36).slice(2);
 
 function poolSize(): number {
-  // RT-1: sized from hardwareConcurrency, never fixed. One slot is kept free
-  // for the UI thread; a pathological block only delays its own worker while
-  // the rest keep pulling from the atomic counter (dynamic scheduling).
   const c = navigator.hardwareConcurrency ?? 4;
   return Math.max(1, Math.min(16, c - 1));
 }
@@ -59,6 +53,7 @@ function connectShared(): void {
     sharedPort = w.port;
     sharedPort.onmessage = (e) => {
       const msg = e.data;
+
       if (msg?.kind === 'snapshot' && msg.state && trafoResults.length === 0) {
         trafoResults = msg.state.ranking.map((r: { id: string; loss: number }) => ({
           id: r.id,
@@ -70,6 +65,7 @@ function connectShared(): void {
         log(`Estado recuperado de otra pestaña: ${trafoResults.length} transformadores (sin reprocesar).`);
       }
     };
+
     sharedPort.start();
     sharedPort.postMessage({ kind: 'hello', tabId });
     sharedPort.postMessage({ kind: 'claim-owner' });
@@ -79,7 +75,6 @@ function connectShared(): void {
 }
 
 async function readFileToSAB(file: File): Promise<{ sab: SharedArrayBuffer; size: number }> {
-  // Streamed slice reads — the file is never held twice in memory.
   const sab = new SharedArrayBuffer(file.size);
   const view = new Uint8Array(sab);
   const CHUNK = 64 * 1024 * 1024;
@@ -103,7 +98,7 @@ async function processReadings(file: File, monthStartEpoch: number) {
   const blocks = planBlocks(size, DEFAULT_BLOCK_BYTES).map((b) => ({ start: b.start, end: b.end }));
   log(`Archivo: ${(size / 1048576).toFixed(1)} MB en ${blocks.length} bloques de ${(DEFAULT_BLOCK_BYTES / 1048576).toFixed(0)} MB.`);
 
-  const control = new Int32Array(new SharedArrayBuffer(3 * 4)); // [next, total, done]
+  const control = new Int32Array(new SharedArrayBuffer(3 * 4)); 
   control[1] = blocks.length;
 
   const workers: Worker[] = [];
@@ -147,7 +142,6 @@ async function processReadings(file: File, monthStartEpoch: number) {
   log(`Filas útiles: ${flat.length.toLocaleString('es')}. Resolviendo versiones…`);
   await yieldToEventLoop();
 
-  // RF-2: dense index + RF-3: max-version resolution.
   const index = new MeterHashIndex(Math.max(1024, flat.length >> 4));
   const nextId = { value: 0 };
   const resolver = new VersionResolver();
@@ -170,7 +164,6 @@ async function processReadings(file: File, monthStartEpoch: number) {
     `Objetos JS equivalentes: ≈${(mem.jsObjectsTotal / 1073741824).toFixed(1)} GB (factor de ahorro ×${mem.savingsFactor.toFixed(1)}).`;
 
   allRows = resolver.result.map((r) => ({ meter: String(r.meter), hour: r.hour, energy: r.energy }));
-  // Keep hex labels for the table.
   const hexById = new Map<number, string>();
   await runChunked(flat.length, (i) => {
     const r = flat[i];
@@ -206,7 +199,6 @@ async function processTopology(file: File, monthStartEpoch: number) {
   validity.finalize();
   const { roots, byId } = buildTree(topoRows as never);
 
-  // RF-4: hourly sums per transformer honoring transfers.
   const trafoHourly = new Map<string, Float64Array>();
   const macroHourly = new Map<string, Float64Array>(); // macromedidor series detected by flags? here: synthetic macro rows
   await runChunked(allRows.length, (i) => {
@@ -221,14 +213,12 @@ async function processTopology(file: File, monthStartEpoch: number) {
     arr[r.hour] += r.energy;
   });
 
-  // Attach sums to tree nodes and roll up (post-order + prefix sums).
   for (const [id, arr] of trafoHourly) {
     const node = byId.get(id);
     if (node) node.hourly.set(arr);
   }
   for (const root of roots) aggregateUp(root);
 
-  // RF-5: residual = macro - sum - technical loss (2 % estimate here).
   const ranking = new TopK(TOP_K_TRAFOS);
   const results: TrafoResult[] = [];
   const trafoIds = [...trafoHourly.keys()];
@@ -285,8 +275,8 @@ function showCandidates(trafoId: string): void {
   const profiles = new Map<string, ArrayLike<number>>();
   const meters = allRows.filter((r) => r.meter.startsWith(trafoId.slice(0, 2)) || true).slice(0, 0);
   void meters;
-  // Build per-meter hourly profile for meters currently assigned (sample view).
   const byMeter = new Map<string, Float64Array>();
+
   for (const r of allRows) {
     let p = byMeter.get(r.meter);
     if (!p) {
@@ -296,6 +286,7 @@ function showCandidates(trafoId: string): void {
     p[r.hour] += r.energy;
     if (byMeter.size > 400) break; // bound the demo comparison
   }
+
   for (const [m, p] of byMeter) profiles.set(m, p);
   const { candidates, costBound } = rankCandidates(t.residual, profiles, 20);
   $('candidatos').innerHTML =
@@ -308,6 +299,7 @@ function showCandidates(trafoId: string): void {
 function renderTree(roots: { id: string; children: { id: string }[] }[]): void {
   const el = $('mapa') as HTMLDivElement;
   el.innerHTML = '';
+
   for (const r of roots.slice(0, 12)) {
     const b = document.createElement('button');
     b.textContent = `▸ ${r.id} (${r.children.length} hijos)`;
@@ -321,7 +313,6 @@ function renderTree(roots: { id: string; children: { id: string }[] }[]): void {
   }
 }
 
-// Virtualized table of readings (RT-9): only visible rows exist in the DOM.
 function renderTable(filter = ''): void {
   const cont = $('tabla') as HTMLDivElement;
   const ROW_H = 26;
@@ -334,6 +325,7 @@ function renderTable(filter = ''): void {
     const start = Math.max(0, Math.floor(top / ROW_H) - 5);
     const end = Math.min(data.length, start + Math.ceil(cont.clientHeight / ROW_H) + 10);
     body.innerHTML = '';
+
     for (let i = start; i < end; i++) {
       const d = document.createElement('div');
       d.className = 'vrow';
@@ -381,7 +373,6 @@ export function initApp(): void {
     const { meters, rows } = await processReadings(file, monthStart);
     void meters;
     void rows;
-    // Build a minimal topology in-memory for the demo.
     const topo = new Blob([synth.topology], { type: 'text/csv' }) as unknown as File;
     (topo as File & { name: string }).name = 'topologia.csv';
     await processTopology(topo as File, monthStart);
@@ -402,6 +393,34 @@ export function initApp(): void {
       await processReadings(fLec, monthStart);
       if (fTop) await processTopology(fTop, monthStart);
       else log('Sin topología: ranking pendiente de la agregación jerárquica.');
+    } catch (err) {
+      log(`Error: ${(err as Error).message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $('btn-sample')?.addEventListener('click', async () => {
+    const btn = $('btn-sample') as HTMLButtonElement;
+    btn.disabled = true;
+    try {
+      log('Descargando muestra incluida del sitio (200 medidores, ~145 000 filas)…');
+      const monthStart = Number(($('mes-inicio') as HTMLInputElement).value) || 1767225600;
+      const [lecBlob, topBlob] = await Promise.all([
+        fetch('samples/lecturas_mes.csv').then((r) => {
+          if (!r.ok) throw new Error('no se pudo descargar la muestra de lecturas');
+          return r.blob();
+        }),
+        fetch('samples/topologia.csv').then((r) => {
+          if (!r.ok) throw new Error('no se pudo descargar la muestra de topología');
+          return r.blob();
+        }),
+      ]);
+      const lec = new File([lecBlob], 'lecturas_mes.csv', { type: 'text/csv' });
+      const top = new File([topBlob], 'topologia.csv', { type: 'text/csv' });
+      await processReadings(lec, monthStart);
+      await processTopology(top, monthStart);
+      log('Muestra incluida procesada: verifica que el ranking capture el fraude sembrado (medidor 5, magnitud 0,45).');
     } catch (err) {
       log(`Error: ${(err as Error).message}`);
     } finally {
