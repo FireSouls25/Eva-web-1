@@ -1,0 +1,6 @@
+# Netlify headers — cross-origin isolation (RT-4) for SharedArrayBuffer.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"

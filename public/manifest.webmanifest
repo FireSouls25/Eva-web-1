@@ -1,0 +1,14 @@
+{
+  "name": "Auditoría de pérdidas de energía",
+  "short_name": "PérdidasEnergía",
+  "description": "Conciliación de lecturas de medidores contra la topología eléctrica, todo dentro del navegador.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "lang": "es",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

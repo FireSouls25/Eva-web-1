@@ -1,0 +1,6 @@
+/*
+  Cloudflare Pages / generic static host headers (RT-4).
+  crossOriginIsolated === true requires both lines below.
+*/
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp

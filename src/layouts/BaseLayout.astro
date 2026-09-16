@@ -1,0 +1,30 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+---
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <slot />
+    <footer>
+      <p>
+        Todo el procesamiento ocurre dentro de tu navegador: el archivo nunca se sube a ningún servidor.
+        Funciona sin conexión una vez cargada, y varias pestañas comparten el mismo análisis.
+        <a href="/informe/">Ver informe de método y mediciones</a>
+      </p>
+    </footer>
+  </body>
+</html>

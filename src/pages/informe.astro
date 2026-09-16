@@ -1,0 +1,45 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+<BaseLayout
+  title="Informe de método y mediciones — Auditoría de pérdidas"
+  description="Decisiones algorítmicas, presupuesto de memoria y verificación del caso."
+>
+  <header class="hero">
+    <h1>Informe de método y mediciones</h1>
+    <p>Cómo el archivo plano se convierte en el plan de inspección, y cuánto cuesta cada paso.</p>
+    <div class="badges"><span class="badge"><a href="/">← Volver a la aplicación</a></span></div>
+  </header>
+  <main>
+    <section class="card">
+      <h2>Flujo del dato</h2>
+      <p class="hint">Archivo → bloques con corte exacto en saltos de línea → pool de Workers (reparto dinámico por contador atómico) → índice hash denso → resolución de versiones → imputación por perfil horario → agregación jerárquica con vigencias → residual − pérdida técnica → mediana/MAD deslizante → montículo top-200 → correlación de candidatos.</p>
+      <table>
+        <thead><tr><th>Etapa</th><th>Estructura</th><th>Costo</th></tr></thead>
+        <tbody>
+          <tr><td>Lectura por bloques</td><td>File.slice + TextDecoder, remanente entre bloques</td><td>O(n) una sola pasada</td></tr>
+          <tr><td>Índice de medidores</td><td>Hash FNV-1a abierto, sondeo lineal, carga ≤ 0,7</td><td>O(1) amortizado; compartido vía SharedArrayBuffer</td></tr>
+          <tr><td>Almacén columnar</td><td>Uint32/Uint16/Uint8/Float64 por columna</td><td>20 B/registro (≈400 MB para 20 M)</td></tr>
+          <tr><td>Versiones</td><td>Mapa (medidor·1024+hora) → ganadora</td><td>O(R) sin ordenar</td></tr>
+          <tr><td>Vigencias</td><td>Intervalos ordenados + búsqueda binaria</td><td>O(R log m)</td></tr>
+          <tr><td>Consulta de subárbol</td><td>Euler tour + sumas prefijas</td><td>O(1) por clic</td></tr>
+          <tr><td>Mediana/MAD 168 h</td><td>Dos montículos balanceados</td><td>O(log 168) por hora</td></tr>
+          <tr><td>Ranking 200</td><td>Montículo acotado + mezcla k-vías</td><td>O(T log 200)</td></tr>
+          <tr><td>Candidatos</td><td>Pearson contra el residual</td><td>O(M·720) solo del trafo abierto</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section class="card">
+      <h2>Presupuesto de memoria (RF-2)</h2>
+      <p class="hint">20 B por registro columnar + 12 B por entrada del índice. Para 20 M de registros y 260 000 medidores: ≈400 MB + 3 MB frente a ≈3,2 GB como objetos JS (×8 de ahorro). A 60 M de registros el diseño columnar escala linealmente (~1,2 GB) y el procesamiento por bloques lo tolera; los objetos JS dejarían inservible la pestaña.</p>
+    </section>
+    <section class="card">
+      <h2>Por qué estos hilos (RT-1, RT-5, RT-6)</h2>
+      <p class="hint">Pool dimensionado con navigator.hardwareConcurrency − 1: un número fijo desperdicia núcleos ociosos o satura equipos pequeños, y un bloque costoso solo retrasa a su worker porque el reparto es dinámico. El SharedWorker guarda el índice y el ranking para las tres pestañas sin reprocesar. El Service Worker cachea el app shell y permite abrir sin VPN; un Web Worker o Shared Worker no pueden interceptar peticiones de red, por eso no sirven para el modo sin conexión.</p>
+    </section>
+    <section class="card">
+      <h2>Verificación</h2>
+      <p class="hint">Generador sintético parametrizable (<code>npm run generate</code>) con fraudes de magnitud conocida; prueba de conteo exacto de filas por bloque (<code>npm run verify-chunks</code>); medición transferencia vs copia en la propia interfaz (RT-3).</p>
+    </section>
+  </main>
+</BaseLayout>

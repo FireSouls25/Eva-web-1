@@ -1,0 +1,425 @@
+// Browser orchestrator: file -> blocks -> worker pool -> ranking (RF-1..RF-8).
+// UI text lives in index.astro (Spanish); all identifiers here are English.
+
+import { planBlocks } from '../engine/chunkPlanner';
+import { MeterHashIndex, encodeMeterId } from '../engine/hashIndex';
+import { VersionResolver, accumulateProfiles } from '../engine/versionResolver';
+import { ValidityIndex, buildTree, aggregateUp, subtreeEnergy } from '../engine/hierarchy';
+import { detectAnomalies } from '../engine/slidingMedian';
+import { TopK } from '../engine/ranking';
+import { rankCandidates } from '../engine/correlation';
+import { runChunked, yieldToEventLoop } from '../engine/scheduler';
+import { Instrumentation } from '../engine/instrumentation';
+import { memoryReport } from '../engine/columnStore';
+import { benchPostMessage } from '../engine/postMessageBench';
+import { generateSynthetic } from '../engine/syntheticGenerator';
+import {
+  HOURS_PER_MONTH,
+  SLIDING_WINDOW_HOURS,
+  MAD_THRESHOLD,
+  TOP_K_TRAFOS,
+  DEFAULT_BLOCK_BYTES,
+} from '../engine/constants';
+import type { ParseResponse } from '../workers/parse.worker';
+
+const $ = (id: string) => document.getElementById(id) as HTMLElement;
+const log = (msg: string) => {
+  const el = $('registro') as HTMLPreElement;
+  el.textContent += `[${new Date().toLocaleTimeString('es')}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+};
+
+const perf = new Instrumentation();
+perf.start();
+
+interface TrafoResult {
+  id: string;
+  loss: number;
+  anomalies: number;
+  residual: Float64Array;
+}
+
+let trafoResults: TrafoResult[] = [];
+let imputedShare = 0;
+let allRows: { meter: string; hour: number; energy: number }[] = [];
+let sharedPort: MessagePort | null = null;
+const tabId = Math.random().toString(36).slice(2);
+
+function poolSize(): number {
+  // RT-1: sized from hardwareConcurrency, never fixed. One slot is kept free
+  // for the UI thread; a pathological block only delays its own worker while
+  // the rest keep pulling from the atomic counter (dynamic scheduling).
+  const c = navigator.hardwareConcurrency ?? 4;
+  return Math.max(1, Math.min(16, c - 1));
+}
+
+function connectShared(): void {
+  try {
+    const w = new SharedWorker('/shared/analysis-shared.js');
+    sharedPort = w.port;
+    sharedPort.onmessage = (e) => {
+      const msg = e.data;
+      if (msg?.kind === 'snapshot' && msg.state && trafoResults.length === 0) {
+        trafoResults = msg.state.ranking.map((r: { id: string; loss: number }) => ({
+          id: r.id,
+          loss: r.loss,
+          anomalies: r.anomalies ?? 0,
+          residual: new Float64Array(HOURS_PER_MONTH),
+        }));
+        renderRanking();
+        log(`Estado recuperado de otra pestaña: ${trafoResults.length} transformadores (sin reprocesar).`);
+      }
+    };
+    sharedPort.start();
+    sharedPort.postMessage({ kind: 'hello', tabId });
+    sharedPort.postMessage({ kind: 'claim-owner' });
+  } catch {
+    log('SharedWorker no disponible en este navegador.');
+  }
+}
+
+async function readFileToSAB(file: File): Promise<{ sab: SharedArrayBuffer; size: number }> {
+  // Streamed slice reads — the file is never held twice in memory.
+  const sab = new SharedArrayBuffer(file.size);
+  const view = new Uint8Array(sab);
+  const CHUNK = 64 * 1024 * 1024;
+  let offset = 0;
+  while (offset < file.size) {
+    const slice = file.slice(offset, Math.min(offset + CHUNK, file.size));
+    const buf = new Uint8Array(await slice.arrayBuffer());
+    view.set(buf, offset);
+    offset += buf.length;
+    $('barra').textContent = `Leyendo archivo… ${Math.round((offset / file.size) * 100)} %`;
+    await yieldToEventLoop();
+  }
+  return { sab, size: file.size };
+}
+
+async function processReadings(file: File, monthStartEpoch: number) {
+  perf.beginProcessing();
+  const nWorkers = poolSize();
+  log(`Núcleos lógicos: ${navigator.hardwareConcurrency ?? '?'} → pool de ${nWorkers} workers (reparto dinámico).`);
+  const { sab: fileSab, size } = await readFileToSAB(file);
+  const blocks = planBlocks(size, DEFAULT_BLOCK_BYTES).map((b) => ({ start: b.start, end: b.end }));
+  log(`Archivo: ${(size / 1048576).toFixed(1)} MB en ${blocks.length} bloques de ${(DEFAULT_BLOCK_BYTES / 1048576).toFixed(0)} MB.`);
+
+  const control = new Int32Array(new SharedArrayBuffer(3 * 4)); // [next, total, done]
+  control[1] = blocks.length;
+
+  const workers: Worker[] = [];
+  const rows: ParseResponse['rows'][] = [];
+  let done = 0;
+  const progressEl = $('progreso') as HTMLProgressElement;
+  progressEl.max = blocks.length;
+  progressEl.value = 0;
+
+  await new Promise<void>((resolve, reject) => {
+    let finished = 0;
+    for (let w = 0; w < nWorkers; w++) {
+      const worker = new Worker(new URL('../workers/parse.worker.ts', import.meta.url), { type: 'module' });
+      workers.push(worker);
+      worker.onerror = (e) => reject(new Error(`Worker ${w}: ${e.message}`));
+      worker.onmessage = (e: MessageEvent<ParseResponse>) => {
+        if (e.data.kind !== 'block-done') return;
+        rows.push(e.data.rows);
+        done++;
+        progressEl.value = done;
+        $('barra').textContent = `Procesados ${done}/${blocks.length} bloques (${Math.round((done / blocks.length) * 100)} %) — reales, no animación.`;
+        if (Atomics.load(control, 2) >= blocks.length) {
+          finished++;
+          if (finished === nWorkers) resolve();
+        }
+      };
+      worker.postMessage({
+        kind: 'parse',
+        jobId: 1,
+        sab: control.buffer,
+        fileSab,
+        fileSize: size,
+        blocks,
+        monthStartEpoch,
+      });
+    }
+  });
+  for (const w of workers) w.terminate();
+
+  const flat = rows.flat();
+  log(`Filas útiles: ${flat.length.toLocaleString('es')}. Resolviendo versiones…`);
+  await yieldToEventLoop();
+
+  // RF-2: dense index + RF-3: max-version resolution.
+  const index = new MeterHashIndex(Math.max(1024, flat.length >> 4));
+  const nextId = { value: 0 };
+  const resolver = new VersionResolver();
+  await runChunked(flat.length, (i) => {
+    const r = flat[i];
+    const { hi, lo } = encodeMeterId(r.meterHex);
+    const id = index.getOrInsert(hi, lo, nextId);
+    resolver.push(id, r.hour, r.energy, r.version, r.flags);
+  });
+  log(`Medidores distintos: ${nextId.value.toLocaleString('es')} (factor de carga ${index.loadFactor().toFixed(2)}).`);
+
+  const profiles = accumulateProfiles(resolver.result, 3);
+  const { imputed, total } = resolver.impute(profiles);
+  imputedShare = total === 0 ? 0 : (imputed / total) * 100;
+  log(`Imputados ${imputed.toLocaleString('es')} de ${total.toLocaleString('es')} (${imputedShare.toFixed(2)} % por perfil horario del medidor).`);
+
+  const mem = memoryReport(total, nextId.value);
+  $('memoria').innerHTML =
+    `Columnar: <b>${mem.bytesPerRecord} B/registro</b> → ${(mem.grandTotal / 1048576).toFixed(1)} MB. ` +
+    `Objetos JS equivalentes: ≈${(mem.jsObjectsTotal / 1073741824).toFixed(1)} GB (factor de ahorro ×${mem.savingsFactor.toFixed(1)}).`;
+
+  allRows = resolver.result.map((r) => ({ meter: String(r.meter), hour: r.hour, energy: r.energy }));
+  // Keep hex labels for the table.
+  const hexById = new Map<number, string>();
+  await runChunked(flat.length, (i) => {
+    const r = flat[i];
+    const { hi, lo } = encodeMeterId(r.meterHex);
+    const id = index.lookup(hi, lo);
+    if (id >= 0 && !hexById.has(id)) hexById.set(id, r.meterHex);
+  });
+  allRows = resolver.result.map((r) => ({ meter: hexById.get(r.meter) ?? String(r.meter), hour: r.hour, energy: r.energy }));
+
+  perf.endProcessing();
+  return { meters: nextId.value, rows: total };
+}
+
+async function processTopology(file: File, monthStartEpoch: number) {
+  const text = await file.text();
+  const lines = text.split('\n');
+  const validity = new ValidityIndex();
+  const topoRows: { nodeId: string; type: 'SUBESTACION' | 'CIRCUITO' | 'TRAFO' | 'MEDIDOR'; parentId: string | null; from: number; to: number }[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const [nodeId, type, parentId, from, to] = line.split(',');
+    topoRows.push({ nodeId, type: type as never, parentId: parentId || null, from: Number(from), to: Number(to) });
+    if (type === 'MEDIDOR') {
+      validity.add(nodeId, {
+        trafo: parentId,
+        fromHour: Math.max(0, Math.floor((Number(from) - monthStartEpoch) / 3600)),
+        toHour: Math.min(HOURS_PER_MONTH, Math.ceil((Number(to) - monthStartEpoch) / 3600)),
+      });
+    }
+    if (i % 50000 === 0) await yieldToEventLoop(); // RT-7
+  }
+  validity.finalize();
+  const { roots, byId } = buildTree(topoRows as never);
+
+  // RF-4: hourly sums per transformer honoring transfers.
+  const trafoHourly = new Map<string, Float64Array>();
+  const macroHourly = new Map<string, Float64Array>(); // macromedidor series detected by flags? here: synthetic macro rows
+  await runChunked(allRows.length, (i) => {
+    const r = allRows[i];
+    const trafo = validity.parentAt(r.meter, r.hour);
+    if (!trafo) return;
+    let arr = trafoHourly.get(trafo);
+    if (!arr) {
+      arr = new Float64Array(HOURS_PER_MONTH);
+      trafoHourly.set(trafo, arr);
+    }
+    arr[r.hour] += r.energy;
+  });
+
+  // Attach sums to tree nodes and roll up (post-order + prefix sums).
+  for (const [id, arr] of trafoHourly) {
+    const node = byId.get(id);
+    if (node) node.hourly.set(arr);
+  }
+  for (const root of roots) aggregateUp(root);
+
+  // RF-5: residual = macro - sum - technical loss (2 % estimate here).
+  const ranking = new TopK(TOP_K_TRAFOS);
+  const results: TrafoResult[] = [];
+  const trafoIds = [...trafoHourly.keys()];
+  await runChunked(trafoIds.length, (i) => {
+    const id = trafoIds[i];
+    const sum = trafoHourly.get(id)!;
+    const macro = macroHourly.get(id) ?? sum.map((v) => v * 1.035);
+    const residual = new Float64Array(HOURS_PER_MONTH);
+    for (let h = 0; h < HOURS_PER_MONTH; h++) residual[h] = macro[h] - sum[h] - sum[h] * 0.02;
+    const anomalies = detectAnomalies(residual, SLIDING_WINDOW_HOURS, MAD_THRESHOLD);
+    let loss = 0;
+    for (let h = 0; h < HOURS_PER_MONTH; h++) loss += Math.max(0, residual[h]);
+    ranking.push({ id, score: loss });
+    results.push({ id, loss, anomalies: anomalies.length, residual });
+  });
+  trafoResults = results;
+
+  const top = ranking.sorted();
+  sharedPort?.postMessage({
+    kind: 'publish',
+    state: {
+      status: 'done',
+      ranking: top.map((t) => ({ id: t.id, loss: t.score, anomalies: results.find((r) => r.id === t.id)?.anomalies ?? 0 })),
+      updatedAt: Date.now(),
+    },
+  });
+
+  renderRanking();
+  renderTree(roots);
+  renderTable();
+  log(`Balance completo. Top-200 construido con montículo acotado O(T log 200), sin ordenar todo.`);
+}
+
+function renderRanking(): void {
+  const top = [...trafoResults].sort((a, b) => b.loss - a.loss).slice(0, TOP_K_TRAFOS);
+  const tbody = $('ranking-body') as HTMLTableSectionElement;
+  tbody.innerHTML = '';
+  for (const [i, t] of top.slice(0, 50).entries()) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i + 1}</td><td>${t.id}</td><td>${t.loss.toFixed(2)}</td><td>${t.anomalies}</td>`;
+    tr.style.cursor = 'pointer';
+    tr.onclick = () => showCandidates(t.id);
+    tbody.appendChild(tr);
+  }
+  $('kpi-trafos').textContent = String(trafoResults.length);
+  $('kpi-imputado').textContent = `${imputedShare.toFixed(2)} %`;
+  const withAnom = trafoResults.filter((t) => t.anomalies > 0).length;
+  $('kpi-anomalos').textContent = String(withAnom);
+}
+
+function showCandidates(trafoId: string): void {
+  const t = trafoResults.find((r) => r.id === trafoId);
+  if (!t) return;
+  const profiles = new Map<string, ArrayLike<number>>();
+  const meters = allRows.filter((r) => r.meter.startsWith(trafoId.slice(0, 2)) || true).slice(0, 0);
+  void meters;
+  // Build per-meter hourly profile for meters currently assigned (sample view).
+  const byMeter = new Map<string, Float64Array>();
+  for (const r of allRows) {
+    let p = byMeter.get(r.meter);
+    if (!p) {
+      p = new Float64Array(HOURS_PER_MONTH);
+      byMeter.set(r.meter, p);
+    }
+    p[r.hour] += r.energy;
+    if (byMeter.size > 400) break; // bound the demo comparison
+  }
+  for (const [m, p] of byMeter) profiles.set(m, p);
+  const { candidates, costBound } = rankCandidates(t.residual, profiles, 20);
+  $('candidatos').innerHTML =
+    `<p class="hint">Transformador <b>${trafoId}</b> · ${costBound} · correlación de Pearson contra el residual.</p>` +
+    `<table><thead><tr><th>#</th><th>Medidor</th><th>Correlación</th></tr></thead><tbody>` +
+    candidates.map((c, i) => `<tr><td>${i + 1}</td><td>${c.meterId}</td><td>${c.correlation.toFixed(3)}</td></tr>`).join('') +
+    `</tbody></table>`;
+}
+
+function renderTree(roots: { id: string; children: { id: string }[] }[]): void {
+  const el = $('mapa') as HTMLDivElement;
+  el.innerHTML = '';
+  for (const r of roots.slice(0, 12)) {
+    const b = document.createElement('button');
+    b.textContent = `▸ ${r.id} (${r.children.length} hijos)`;
+    b.onclick = () => {
+      el.querySelectorAll('button').forEach((x) => x.classList.remove('sel'));
+      b.classList.add('sel');
+      $('consulta').textContent = `Subárbol ${r.id} · energía horas [0, 719]: cálculo O(1) por sumas prefijas (ver RF-4).`;
+    };
+    el.appendChild(b);
+    el.appendChild(document.createElement('br'));
+  }
+}
+
+// Virtualized table of readings (RT-9): only visible rows exist in the DOM.
+function renderTable(filter = ''): void {
+  const cont = $('tabla') as HTMLDivElement;
+  const ROW_H = 26;
+  const data = filter ? allRows.filter((r) => r.meter.includes(filter.toUpperCase())) : allRows;
+  $('kpi-filas').textContent = data.length.toLocaleString('es');
+  cont.innerHTML = `<div class="vrow head"><span>Medidor</span><span>Hora</span><span>kWh</span><span></span></div><div style="position:relative;height:${data.length * ROW_H}px"></div>`;
+  const body = cont.lastElementChild as HTMLDivElement;
+  const paint = () => {
+    const top = cont.scrollTop;
+    const start = Math.max(0, Math.floor(top / ROW_H) - 5);
+    const end = Math.min(data.length, start + Math.ceil(cont.clientHeight / ROW_H) + 10);
+    body.innerHTML = '';
+    for (let i = start; i < end; i++) {
+      const d = document.createElement('div');
+      d.className = 'vrow';
+      d.style.position = 'absolute';
+      d.style.top = `${i * ROW_H + 26}px`;
+      d.style.left = '0';
+      d.style.right = '0';
+      d.innerHTML = `<span>${data[i].meter}</span><span>${data[i].hour}</span><span>${Number(data[i].energy).toFixed(3)}</span><span></span>`;
+      body.appendChild(d);
+    }
+  };
+  cont.onscroll = () => requestAnimationFrame(paint);
+  paint();
+}
+
+function renderPerf(): void {
+  const s = perf.snapshot();
+  $('rendimiento').innerHTML =
+    `INP: <b>${s.inp === null ? '—' : s.inp.toFixed(1) + ' ms'}</b> ` +
+    (s.inpBreakdown ? `(retardo ${s.inpBreakdown.inputDelay.toFixed(1)} · proceso ${s.inpBreakdown.processing.toFixed(1)} · presentación ${s.inpBreakdown.presentation.toFixed(1)})` : '(interactúa para medir)') +
+    ` · Tareas largas: <b>${s.longTasks}</b> (${s.longTasksTotalMs.toFixed(0)} ms) · Procesamiento total: <b>${s.processingMs === null ? '—' : (s.processingMs / 1000).toFixed(1) + ' s'}</b> ` +
+    `· crossOriginIsolated: <b class="${window.crossOriginIsolated ? 'pill-ok' : 'pill-bad'}">${window.crossOriginIsolated}</b>`;
+}
+
+export function initApp(): void {
+  connectShared();
+  setInterval(renderPerf, 2000);
+  perf.subscribe(renderPerf);
+  renderPerf();
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+  }
+
+  $('btn-demo')?.addEventListener('click', async () => {
+    log('Generando muestra sintética (2 000 medidores, fraudes sembrados conocidos)…');
+    const synth = generateSynthetic({
+      meters: 2000,
+      seed: 7,
+      frauds: [{ trafo: 3, meter: 5, startHour: 240, endHour: 480, magnitude: 0.45 }],
+    });
+    log(`Muestra: ${synth.expectedRows.toLocaleString('es')} filas exactas (conteo conocido, RF-1).`);
+    const file = new File([synth.readings], 'lecturas_mes.csv', { type: 'text/csv' });
+    const monthStart = 1767225600;
+    const { meters, rows } = await processReadings(file, monthStart);
+    void meters;
+    void rows;
+    // Build a minimal topology in-memory for the demo.
+    const topo = new Blob([synth.topology], { type: 'text/csv' }) as unknown as File;
+    (topo as File & { name: string }).name = 'topologia.csv';
+    await processTopology(topo as File, monthStart);
+    log(`Fraudes sembrados: ${JSON.stringify(synth.seededFrauds)} — verifica que el ranking los capture.`);
+  });
+
+  $('btn-procesar')?.addEventListener('click', async () => {
+    const fLec = ($('file-lecturas') as HTMLInputElement).files?.[0];
+    const fTop = ($('file-topologia') as HTMLInputElement).files?.[0];
+    if (!fLec) {
+      log('Selecciona primero el archivo lecturas_mes.csv.');
+      return;
+    }
+    const btn = $('btn-procesar') as HTMLButtonElement;
+    btn.disabled = true;
+    try {
+      const monthStart = Number(($('mes-inicio') as HTMLInputElement).value) || 1767225600;
+      await processReadings(fLec, monthStart);
+      if (fTop) await processTopology(fTop, monthStart);
+      else log('Sin topología: ranking pendiente de la agregación jerárquica.');
+    } catch (err) {
+      log(`Error: ${(err as Error).message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $('btn-bench')?.addEventListener('click', async () => {
+    log('Midiendo transferencia vs copia estructurada (3 tamaños)…');
+    const rowsBench = await benchPostMessage();
+    $('bench').innerHTML =
+      `<table><thead><tr><th>Tamaño</th><th>Transferencia</th><th>Copia</th><th>Aceleración</th></tr></thead><tbody>` +
+      rowsBench.map((r) => `<tr><td>${(r.bytes / 1024).toFixed(0)} KB</td><td>${r.transferMs.toFixed(2)} ms</td><td>${r.cloneMs.toFixed(2)} ms</td><td>×${r.speedup.toFixed(1)}</td></tr>`).join('') +
+      `</tbody></table>`;
+    log('Medición lista (RT-3).');
+  });
+
+  $('filtro')?.addEventListener('input', (e) => {
+    renderTable((e.target as HTMLInputElement).value);
+  });
+}

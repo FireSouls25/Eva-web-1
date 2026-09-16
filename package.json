@@ -1,0 +1,23 @@
+{
+  "name": "auditoria-perdidas-energia",
+  "version": "1.0.0",
+  "description": "Auditoría de pérdidas de energía en el navegador — conciliación de lecturas de medidores contra la topología eléctrica sin instalar software.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "generate": "node tools/generate-synthetic.mjs",
+    "verify-chunks": "node tools/verify-chunks.mjs"
+  },
+  "dependencies": {
+    "astro": "7.3.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

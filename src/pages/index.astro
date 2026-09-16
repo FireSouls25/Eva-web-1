@@ -1,0 +1,105 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+<BaseLayout
+  title="Auditoría de pérdidas de energía — plan de inspección semanal"
+  description="Conciliación de lecturas de medidores contra la topología eléctrica, todo dentro del navegador."
+>
+  <header class="hero">
+    <h1>⚡ Auditoría de pérdidas de energía</h1>
+    <p>
+      Entrega el archivo de lecturas y la topología desde tu disco: la aplicación concilia
+      <b>≈20 millones de registros</b> contra la jerarquía subestación → circuito → transformador → medidor,
+      estima la pérdida técnica, detecta horas anómalas y produce el <b>plan de inspección de la semana</b>.
+      Nada se instala y nada se sube: todo ocurre en este navegador.
+    </p>
+    <div class="badges">
+      <span class="badge">Núcleos: <b id="badge-cores">…</b></span>
+      <span class="badge">Aislamiento cross-origin: <b id="badge-coi">…</b></span>
+      <span class="badge">INP ≤ 200 ms: <b id="badge-inp">…</b></span>
+      <span class="badge">Sin conexión: <b>lista</b></span>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>1 · Cargar archivos locales</h2>
+      <p class="hint">
+        Los archivos se leen por bloques desde tu disco y se procesan en varios hilos en paralelo.
+        La interfaz nunca se congela: puedes desplazarte y filtrar mientras tanto.
+      </p>
+      <div class="row">
+        <label class="file-btn" for="file-lecturas">Elegir lecturas_mes.csv</label>
+        <input id="file-lecturas" type="file" accept=".csv" hidden />
+        <label class="file-btn" for="file-topologia" style="background:transparent;border:1px solid var(--line);color:var(--text)">Elegir topologia.csv</label>
+        <input id="file-topologia" type="file" accept=".csv" hidden />
+        <input id="mes-inicio" type="number" value="1767225600" title="Epoch de la hora 0 del mes" style="width:160px" />
+        <button id="btn-procesar">Procesar y generar plan</button>
+        <button id="btn-demo" class="ghost">Probar con muestra sintética</button>
+      </div>
+      <p class="hint" id="barra">Sin procesar.</p>
+      <progress id="progreso" max="100" value="0"></progress>
+      <div class="kpi">
+        <div><small>Transformadores</small><strong id="kpi-trafos">—</strong></div>
+        <div><small>Lecturas conciliadas</small><strong id="kpi-filas">—</strong></div>
+        <div><small>Con anomalías</small><strong id="kpi-anomalos">—</strong></div>
+        <div><small>Energía imputada</small><strong id="kpi-imputado">—</strong></div>
+      </div>
+      <p class="hint" id="memoria"></p>
+    </section>
+
+    <div class="grid-2">
+      <section class="card">
+        <h2>2 · Plan de inspección: top 200 transformadores</h2>
+        <p class="hint">Ordenados por pérdida acumulada no explicada. Haz clic en una fila para ver clientes candidatos.</p>
+        <table>
+          <thead><tr><th>#</th><th>Transformador</th><th>Pérdida (kWh)</th><th>Horas anómalas</th></tr></thead>
+          <tbody id="ranking-body"><tr><td colspan="4">Sin resultados todavía.</td></tr></tbody>
+        </table>
+      </section>
+      <section class="card">
+        <h2>3 · Clientes candidatos</h2>
+        <div id="candidatos"><p class="hint">Selecciona un transformador del ranking.</p></div>
+      </section>
+    </div>
+
+    <div class="grid-2">
+      <section class="card">
+        <h2>4 · Mapa jerárquico</h2>
+        <p class="hint">Cada clic responde en tiempo constante gracias a sumas prefijas sobre el recorrido en profundidad.</p>
+        <div id="mapa" class="tree"><p class="hint">Se llena al cargar la topología.</p></div>
+        <p class="hint" id="consulta"></p>
+      </section>
+      <section class="card">
+        <h2>5 · Lecturas (tabla virtualizada)</h2>
+        <p class="hint">Solo las filas visibles existen en el DOM, aunque haya cientos de miles.</p>
+        <div class="row" style="margin-bottom:8px">
+          <input id="filtro" type="text" placeholder="Filtrar por medidor, p. ej. A1F2…" style="flex:1" />
+        </div>
+        <div id="tabla" class="vtable"></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>6 · Rendimiento en vivo</h2>
+      <p class="hint">Instrumentación con PerformanceObserver: INP con desglose, tareas largas y tiempo total.</p>
+      <p id="rendimiento">Midiendo…</p>
+      <div class="row">
+        <button id="btn-bench" class="ghost">Medir transferencia vs copia (RT-3)</button>
+      </div>
+      <div id="bench" style="margin-top:10px"></div>
+    </section>
+
+    <section class="card">
+      <h2>7 · Registro del proceso</h2>
+      <pre id="registro" class="log">Listo. Todo queda en este equipo.\n</pre>
+    </section>
+  </main>
+
+  <script>
+    import { initApp } from '../scripts/app.ts';
+    document.getElementById('badge-cores').textContent = String(navigator.hardwareConcurrency ?? 'desconocido');
+    document.getElementById('badge-coi').textContent = String(window.crossOriginIsolated);
+    initApp();
+  </script>
+</BaseLayout>
