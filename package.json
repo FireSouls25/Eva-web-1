@@ -12,12 +12,14 @@
     "build": "astro build",
     "preview": "astro preview",
     "generate": "node tools/generate-synthetic.mjs",
-    "verify-chunks": "node tools/verify-chunks.mjs"
+    "verify-chunks": "node tools/verify-chunks.mjs",
+    "smoke": "esbuild tools/smoke.mjs --bundle --platform=node --format=cjs --outfile=node_modules/.cache/smoke.cjs --log-level=error && node node_modules/.cache/smoke.cjs"
   },
   "dependencies": {
     "astro": "7.3.2"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3"
   }
 }

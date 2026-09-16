@@ -110,7 +110,11 @@ async function processReadings(file: File, monthStartEpoch: number) {
   progressEl.value = 0;
 
   await new Promise<void>((resolve, reject) => {
-    let finished = 0;
+    // Every block produces exactly one 'block-done' message, so the pool is
+    // complete when all blocks are accounted for. (Workers that find the
+    // atomic counter exhausted simply exit without posting, so completion
+    // must be counted by blocks — never by workers.)
+    let settled = false;
     for (let w = 0; w < nWorkers; w++) {
       const worker = new Worker(new URL('../workers/parse.worker.ts', import.meta.url), { type: 'module' });
       workers.push(worker);
@@ -121,9 +125,9 @@ async function processReadings(file: File, monthStartEpoch: number) {
         done++;
         progressEl.value = done;
         $('barra').textContent = `Avance: ${done}/${blocks.length} partes (${Math.round((done / blocks.length) * 100)} %).`;
-        if (Atomics.load(control, 2) >= blocks.length) {
-          finished++;
-          if (finished === nWorkers) resolve();
+        if (done >= blocks.length && !settled) {
+          settled = true;
+          resolve();
         }
       };
       worker.postMessage({
@@ -423,11 +427,11 @@ function refreshFileList(files: File[], kinds: (('lecturas' | 'topologia' | null
       log('Cargando los datos de ejemplo incluidos en la página…');
       const monthStart = Number(($('mes-inicio') as HTMLInputElement).value) || 1767225600;
       const [lecBlob, topBlob] = await Promise.all([
-        fetch('samples/lecturas_mes.csv').then((r) => {
+        fetch('/samples/lecturas_mes.csv').then((r) => {
           if (!r.ok) throw new Error('no se pudo descargar la muestra de lecturas');
           return r.blob();
         }),
-        fetch('samples/topologia.csv').then((r) => {
+        fetch('/samples/topologia.csv').then((r) => {
           if (!r.ok) throw new Error('no se pudo descargar la muestra de topología');
           return r.blob();
         }),
