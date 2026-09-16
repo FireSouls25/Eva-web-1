@@ -20,11 +20,12 @@ const { title, description } = Astro.props;
   <body>
     <slot />
     <footer>
-      <p>
-        Todo el procesamiento ocurre dentro de tu navegador: el archivo nunca se sube a ningún servidor.
-        Funciona sin conexión una vez cargada, y varias pestañas comparten el mismo análisis.
-        <a href="/informe/">Ver informe de método y mediciones</a>
-      </p>
+      <div class="wrap">
+        <p>
+          Tus archivos nunca salen de este equipo. Esta página funciona sin conexión una vez cargada.
+          <a href="/informe/">Cómo funciona el análisis</a>
+        </p>
+      </div>
     </footer>
   </body>
 </html>

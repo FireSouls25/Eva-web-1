@@ -3,110 +3,111 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 ---
 <BaseLayout
   title="Auditoría de pérdidas de energía — plan de inspección semanal"
-  description="Conciliación de lecturas de medidores contra la topología eléctrica, todo dentro del navegador."
+  description="Analiza las lecturas de tu red eléctrica y descubre dónde conviene inspeccionar esta semana."
 >
   <header class="hero">
-    <h1>⚡ Auditoría de pérdidas de energía</h1>
-    <p>
-      Entrega el archivo de lecturas y la topología desde tu disco: la aplicación concilia
-      <b>≈20 millones de registros</b> contra la jerarquía subestación → circuito → transformador → medidor,
-      estima la pérdida técnica, detecta horas anómalas y produce el <b>plan de inspección de la semana</b>.
-      Nada se instala y nada se sube: todo ocurre en este navegador.
-    </p>
-    <div class="badges">
-      <span class="badge">Núcleos: <b id="badge-cores">…</b></span>
-      <span class="badge">Aislamiento cross-origin: <b id="badge-coi">…</b></span>
-      <span class="badge">INP ≤ 200 ms: <b id="badge-inp">…</b></span>
-      <span class="badge">Sin conexión: <b>lista</b></span>
+    <div class="wrap">
+      <h1>Auditoría de pérdidas de energía</h1>
+      <p>
+        Descubre cuánta energía se pierde en tu red, en qué transformadores se
+        concentra la pérdida y a cuáles conviene enviar la inspección esta semana.
+      </p>
+      <div class="badges">
+        <span class="badge">Tus datos <b>no salen de este equipo</b></span>
+        <span class="badge">Funciona <b>sin conexión</b></span>
+        <span class="badge"><b>Sin instalar</b> nada</span>
+      </div>
     </div>
   </header>
 
   <main>
     <section class="card">
-      <h2>1 · Cargar archivos locales</h2>
+      <h2>Carga tus archivos para ver el análisis</h2>
       <p class="hint">
-        Los archivos se leen por bloques desde tu disco y se procesan en varios hilos en paralelo.
-        La interfaz nunca se congela: puedes desplazarte y filtrar mientras tanto.
+        Puedes cargar el archivo de lecturas, el de topología de la red, o ambos.
+        Cada uno muestra resultados por su cuenta; juntos generan el plan de inspección completo.
       </p>
       <div class="row">
-        <label class="file-btn" for="file-lecturas">Elegir lecturas_mes.csv</label>
-        <input id="file-lecturas" type="file" accept=".csv" hidden />
-        <label class="file-btn" for="file-topologia" style="background:transparent;border:1px solid var(--line);color:var(--text)">Elegir topologia.csv</label>
-        <input id="file-topologia" type="file" accept=".csv" hidden />
-        <input id="mes-inicio" type="number" value="1767225600" title="Epoch de la hora 0 del mes" style="width:160px" />
-        <button id="btn-procesar">Procesar y generar plan</button>
-        <button id="btn-sample">Usar muestra incluida (200 medidores)</button>
-        <button id="btn-demo" class="ghost">Generar muestra grande (2 000)</button>
+        <label class="file-btn" for="file-csv">Elegir archivos</label>
+        <input id="file-csv" type="file" accept=".csv" multiple hidden />
+        <button id="btn-procesar">Ver análisis</button>
+        <button id="btn-sample" class="ghost">Probar con datos de ejemplo</button>
       </div>
-      <p class="hint" id="barra">Sin procesar.</p>
-      <p class="hint">
-        ¿Sin archivos a la mano? La muestra incluida viaja con el sitio:
-        <a href="samples/lecturas_mes.csv" download>lecturas_mes.csv</a> ·
-        <a href="samples/topologia.csv" download>topologia.csv</a>
-        (200 medidores, ~145 000 filas, fraude sembrado conocido).
-      </p>
+      <ul id="archivos" class="file-list"></ul>
+      <details class="advanced">
+        <summary>Opciones avanzadas</summary>
+        <div class="row" style="margin-top:8px">
+          <label for="mes-inicio">Inicio del mes (epoch):</label>
+          <input id="mes-inicio" type="number" value="1767225600" style="width:160px" />
+          <button id="btn-demo" class="ghost">Generar ejemplo grande (2 000 medidores)</button>
+        </div>
+      </details>
+      <p class="hint" id="barra" style="margin-top:12px">Aún no hay análisis.</p>
       <progress id="progreso" max="100" value="0"></progress>
+      <p class="hint">
+        ¿No tienes archivos a la mano? La muestra de ejemplo viene incluida en esta página
+        (<a href="samples/lecturas_mes.csv" download>lecturas</a> ·
+        <a href="samples/topologia.csv" download>topología</a>).
+      </p>
       <div class="kpi">
         <div><small>Transformadores</small><strong id="kpi-trafos">—</strong></div>
-        <div><small>Lecturas conciliadas</small><strong id="kpi-filas">—</strong></div>
+        <div><small>Lecturas analizadas</small><strong id="kpi-filas">—</strong></div>
         <div><small>Con anomalías</small><strong id="kpi-anomalos">—</strong></div>
-        <div><small>Energía imputada</small><strong id="kpi-imputado">—</strong></div>
+        <div><small>Datos estimados</small><strong id="kpi-imputado">—</strong></div>
       </div>
       <p class="hint" id="memoria"></p>
     </section>
 
     <div class="grid-2">
       <section class="card">
-        <h2>2 · Plan de inspección: top 200 transformadores</h2>
-        <p class="hint">Ordenados por pérdida acumulada no explicada. Haz clic en una fila para ver clientes candidatos.</p>
+        <h2>Plan de inspección semanal</h2>
+        <p class="hint">Los transformadores con mayor pérdida primero. Toca uno para ver qué clientes revisar.</p>
         <table>
-          <thead><tr><th>#</th><th>Transformador</th><th>Pérdida (kWh)</th><th>Horas anómalas</th></tr></thead>
-          <tbody id="ranking-body"><tr><td colspan="4">Sin resultados todavía.</td></tr></tbody>
+          <thead><tr><th>#</th><th>Transformador</th><th>Pérdida (kWh)</th><th>Horas inusuales</th></tr></thead>
+          <tbody id="ranking-body"><tr><td colspan="4">Aquí aparecerá tu plan cuando cargues los archivos.</td></tr></tbody>
         </table>
       </section>
       <section class="card">
-        <h2>3 · Clientes candidatos</h2>
-        <div id="candidatos"><p class="hint">Selecciona un transformador del ranking.</p></div>
+        <h2>Clientes a revisar</h2>
+        <div id="candidatos"><p class="hint">Elige un transformador del plan para ver la lista.</p></div>
       </section>
     </div>
 
     <div class="grid-2">
       <section class="card">
-        <h2>4 · Mapa jerárquico</h2>
-        <p class="hint">Cada clic responde en tiempo constante gracias a sumas prefijas sobre el recorrido en profundidad.</p>
-        <div id="mapa" class="tree"><p class="hint">Se llena al cargar la topología.</p></div>
+        <h2>Mapa de la red</h2>
+        <p class="hint">Explora subestaciones, circuitos y transformadores.</p>
+        <div id="mapa" class="tree"><p class="hint">Aparecerá al cargar el archivo de topología.</p></div>
         <p class="hint" id="consulta"></p>
       </section>
       <section class="card">
-        <h2>5 · Lecturas (tabla virtualizada)</h2>
-        <p class="hint">Solo las filas visibles existen en el DOM, aunque haya cientos de miles.</p>
+        <h2>Lecturas</h2>
+        <p class="hint">Busca cualquier medidor por su código.</p>
         <div class="row" style="margin-bottom:8px">
-          <input id="filtro" type="text" placeholder="Filtrar por medidor, p. ej. A1F2…" style="flex:1" />
+          <input id="filtro" type="text" placeholder="Código del medidor, p. ej. A1F2…" style="flex:1" />
         </div>
         <div id="tabla" class="vtable"></div>
       </section>
     </div>
 
     <section class="card">
-      <h2>6 · Rendimiento en vivo</h2>
-      <p class="hint">Instrumentación con PerformanceObserver: INP con desglose, tareas largas y tiempo total.</p>
-      <p id="rendimiento">Midiendo…</p>
+      <h2>Estado del análisis</h2>
+      <p class="hint">Tiempo de procesamiento y fluidez de la página durante el análisis.</p>
+      <p id="rendimiento">Aún no hay análisis.</p>
       <div class="row">
-        <button id="btn-bench" class="ghost">Medir transferencia vs copia (RT-3)</button>
+        <button id="btn-bench" class="ghost">Medir velocidad de transferencia</button>
       </div>
       <div id="bench" style="margin-top:10px"></div>
     </section>
 
     <section class="card">
-      <h2>7 · Registro del proceso</h2>
-      <pre id="registro" class="log">Listo. Todo queda en este equipo.\n</pre>
+      <h2>Actividad</h2>
+      <pre id="registro" class="log">Todo lo que hagas queda en este equipo.\n</pre>
     </section>
   </main>
 
   <script>
     import { initApp } from '../scripts/app.ts';
-    document.getElementById('badge-cores').textContent = String(navigator.hardwareConcurrency ?? 'desconocido');
-    document.getElementById('badge-coi').textContent = String(window.crossOriginIsolated);
     initApp();
   </script>
 </BaseLayout>

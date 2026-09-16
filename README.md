@@ -1,6 +1,6 @@
 # Auditoría de pérdidas de energía en el navegador
 
-Aplicación web (Astro) que concilia ~20 millones de lecturas horarias contra la
+Aplicación web Astro que concilia lecturas horarias contra la
 topología eléctrica y produce el plan semanal de inspección — todo dentro del
 navegador, sin instalar software y sin subir datos a ningún servidor.
 
@@ -12,10 +12,11 @@ Node.js 22 o mayor
 
 | Comando | Qué hace |
 |---|---|
-| `npm run dev` | Servidor local con COOP/COEP (crossOriginIsolated = true) |
+| `npm install` | Instalar dependencias |
+| `npm run dev` | Servidor local con COOP/COEP |
 | `npm run build` / `preview` | Compilación y vista previa de producción |
 | `npm run generate -- --meters 2000 --out ./samples` | Datos sintéticos con fraudes sembrados |
-| `npm run verify-chunks` | Prueba de conteo exacto de filas por bloque (RF-1) |
+| `npm run verify-chunks` | Prueba de conteo exacto de filas por bloque |
 
 ## Muestra incluida en el sitio
 
@@ -35,8 +36,8 @@ Pearson contra el residual para candidatos.
 
 ## Estructura
 
-- `src/pages/` — interfaz en español (`index.astro`, `informe.astro`)
-- `src/engine/` — algoritmo (índice, columnas, jerarquía, mediana, ranking…)
+- `src/pages/` — interfaz
+- `src/engine/` — algoritmo
 - `src/workers/parse.worker.ts` — parseo paralelo por bloques
 - `public/shared/analysis-shared.js` — estado compartido entre pestañas
 - `public/sw.js` — app shell sin conexión

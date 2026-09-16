@@ -1,19 +1,19 @@
 export interface SyntheticOptions {
   meters: number;
-  days?: number; // default 30
-  gapRate?: number; // e.g. 0.06
-  dupRate?: number; // e.g. 0.012
-  movedMeters?: number; // e.g. 3000 scaled
+  days?: number; 
+  gapRate?: number;
+  dupRate?: number; 
+  movedMeters?: number; 
   newMeters?: number;
   frauds?: { trafo: number; meter: number; startHour: number; endHour: number; magnitude: number }[];
   seed?: number;
-  startEpoch?: number; // epoch seconds of hour 0
+  startEpoch?: number; 
 }
 
 export interface SyntheticResult {
-  readings: string; // CSV text
-  topology: string; // CSV text
-  expectedRows: number; // exact row count (RF-1 known-count demo)
+  readings: string; 
+  topology: string;
+  expectedRows: number; 
   seededFrauds: NonNullable<SyntheticOptions['frauds']>;
 }
 

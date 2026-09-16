@@ -62,7 +62,7 @@ function connectShared(): void {
           residual: new Float64Array(HOURS_PER_MONTH),
         }));
         renderRanking();
-        log(`Estado recuperado de otra pestaña: ${trafoResults.length} transformadores (sin reprocesar).`);
+        log(`Análisis recuperado de otra pestaña abierta: ${trafoResults.length} transformadores.`);
       }
     };
 
@@ -79,12 +79,13 @@ async function readFileToSAB(file: File): Promise<{ sab: SharedArrayBuffer; size
   const view = new Uint8Array(sab);
   const CHUNK = 64 * 1024 * 1024;
   let offset = 0;
+
   while (offset < file.size) {
     const slice = file.slice(offset, Math.min(offset + CHUNK, file.size));
     const buf = new Uint8Array(await slice.arrayBuffer());
     view.set(buf, offset);
     offset += buf.length;
-    $('barra').textContent = `Leyendo archivo… ${Math.round((offset / file.size) * 100)} %`;
+    $('barra').textContent = `Cargando archivo… ${Math.round((offset / file.size) * 100)} %`;
     await yieldToEventLoop();
   }
   return { sab, size: file.size };
@@ -93,10 +94,10 @@ async function readFileToSAB(file: File): Promise<{ sab: SharedArrayBuffer; size
 async function processReadings(file: File, monthStartEpoch: number) {
   perf.beginProcessing();
   const nWorkers = poolSize();
-  log(`Núcleos lógicos: ${navigator.hardwareConcurrency ?? '?'} → pool de ${nWorkers} workers (reparto dinámico).`);
+  log(`Analizando con ${nWorkers} procesos en paralelo…`);
   const { sab: fileSab, size } = await readFileToSAB(file);
   const blocks = planBlocks(size, DEFAULT_BLOCK_BYTES).map((b) => ({ start: b.start, end: b.end }));
-  log(`Archivo: ${(size / 1048576).toFixed(1)} MB en ${blocks.length} bloques de ${(DEFAULT_BLOCK_BYTES / 1048576).toFixed(0)} MB.`);
+  log(`Archivo: ${(size / 1048576).toFixed(1)} MB en ${blocks.length} partes.`);
 
   const control = new Int32Array(new SharedArrayBuffer(3 * 4)); 
   control[1] = blocks.length;
@@ -119,7 +120,7 @@ async function processReadings(file: File, monthStartEpoch: number) {
         rows.push(e.data.rows);
         done++;
         progressEl.value = done;
-        $('barra').textContent = `Procesados ${done}/${blocks.length} bloques (${Math.round((done / blocks.length) * 100)} %) — reales, no animación.`;
+        $('barra').textContent = `Avance: ${done}/${blocks.length} partes (${Math.round((done / blocks.length) * 100)} %).`;
         if (Atomics.load(control, 2) >= blocks.length) {
           finished++;
           if (finished === nWorkers) resolve();
@@ -139,32 +140,32 @@ async function processReadings(file: File, monthStartEpoch: number) {
   for (const w of workers) w.terminate();
 
   const flat = rows.flat();
-  log(`Filas útiles: ${flat.length.toLocaleString('es')}. Resolviendo versiones…`);
+  log(`Lecturas encontradas: ${flat.length.toLocaleString('es')}. Organizando…`);
   await yieldToEventLoop();
 
   const index = new MeterHashIndex(Math.max(1024, flat.length >> 4));
   const nextId = { value: 0 };
   const resolver = new VersionResolver();
+
   await runChunked(flat.length, (i) => {
     const r = flat[i];
     const { hi, lo } = encodeMeterId(r.meterHex);
     const id = index.getOrInsert(hi, lo, nextId);
     resolver.push(id, r.hour, r.energy, r.version, r.flags);
   });
-  log(`Medidores distintos: ${nextId.value.toLocaleString('es')} (factor de carga ${index.loadFactor().toFixed(2)}).`);
+  log(`Medidores: ${nextId.value.toLocaleString('es')}.`);
 
   const profiles = accumulateProfiles(resolver.result, 3);
   const { imputed, total } = resolver.impute(profiles);
   imputedShare = total === 0 ? 0 : (imputed / total) * 100;
-  log(`Imputados ${imputed.toLocaleString('es')} de ${total.toLocaleString('es')} (${imputedShare.toFixed(2)} % por perfil horario del medidor).`);
+  log(`Datos estimados: ${imputed.toLocaleString('es')} de ${total.toLocaleString('es')} (${imputedShare.toFixed(2)} %).`);
 
   const mem = memoryReport(total, nextId.value);
-  $('memoria').innerHTML =
-    `Columnar: <b>${mem.bytesPerRecord} B/registro</b> → ${(mem.grandTotal / 1048576).toFixed(1)} MB. ` +
-    `Objetos JS equivalentes: ≈${(mem.jsObjectsTotal / 1073741824).toFixed(1)} GB (factor de ahorro ×${mem.savingsFactor.toFixed(1)}).`;
+  $('memoria').innerHTML = `Tamaño en memoria: ${(mem.grandTotal / 1048576).toFixed(1)} MB.`;
 
   allRows = resolver.result.map((r) => ({ meter: String(r.meter), hour: r.hour, energy: r.energy }));
   const hexById = new Map<number, string>();
+
   await runChunked(flat.length, (i) => {
     const r = flat[i];
     const { hi, lo } = encodeMeterId(r.meterHex);
@@ -182,6 +183,7 @@ async function processTopology(file: File, monthStartEpoch: number) {
   const lines = text.split('\n');
   const validity = new ValidityIndex();
   const topoRows: { nodeId: string; type: 'SUBESTACION' | 'CIRCUITO' | 'TRAFO' | 'MEDIDOR'; parentId: string | null; from: number; to: number }[] = [];
+
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
@@ -194,13 +196,14 @@ async function processTopology(file: File, monthStartEpoch: number) {
         toHour: Math.min(HOURS_PER_MONTH, Math.ceil((Number(to) - monthStartEpoch) / 3600)),
       });
     }
-    if (i % 50000 === 0) await yieldToEventLoop(); // RT-7
+    if (i % 50000 === 0) await yieldToEventLoop(); 
   }
   validity.finalize();
   const { roots, byId } = buildTree(topoRows as never);
 
   const trafoHourly = new Map<string, Float64Array>();
-  const macroHourly = new Map<string, Float64Array>(); // macromedidor series detected by flags? here: synthetic macro rows
+  const macroHourly = new Map<string, Float64Array>(); 
+
   await runChunked(allRows.length, (i) => {
     const r = allRows[i];
     const trafo = validity.parentAt(r.meter, r.hour);
@@ -222,6 +225,7 @@ async function processTopology(file: File, monthStartEpoch: number) {
   const ranking = new TopK(TOP_K_TRAFOS);
   const results: TrafoResult[] = [];
   const trafoIds = [...trafoHourly.keys()];
+
   await runChunked(trafoIds.length, (i) => {
     const id = trafoIds[i];
     const sum = trafoHourly.get(id)!;
@@ -249,13 +253,18 @@ async function processTopology(file: File, monthStartEpoch: number) {
   renderRanking();
   renderTree(roots);
   renderTable();
-  log(`Balance completo. Top-200 construido con montículo acotado O(T log 200), sin ordenar todo.`);
+  log(`Análisis listo. Revisa tu plan de inspección semanal.`);
 }
 
 function renderRanking(): void {
-  const top = [...trafoResults].sort((a, b) => b.loss - a.loss).slice(0, TOP_K_TRAFOS);
   const tbody = $('ranking-body') as HTMLTableSectionElement;
   tbody.innerHTML = '';
+  if (trafoResults.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4">Aquí aparecerá tu plan cuando cargues los archivos.</td></tr>';
+    return;
+  }
+  const top = [...trafoResults].sort((a, b) => b.loss - a.loss).slice(0, TOP_K_TRAFOS);
+  
   for (const [i, t] of top.slice(0, 50).entries()) {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${i + 1}</td><td>${t.id}</td><td>${t.loss.toFixed(2)}</td><td>${t.anomalies}</td>`;
@@ -290,7 +299,7 @@ function showCandidates(trafoId: string): void {
   for (const [m, p] of byMeter) profiles.set(m, p);
   const { candidates, costBound } = rankCandidates(t.residual, profiles, 20);
   $('candidatos').innerHTML =
-    `<p class="hint">Transformador <b>${trafoId}</b> · ${costBound} · correlación de Pearson contra el residual.</p>` +
+    `<p class="hint">Transformador <b>${trafoId}</b> · ${costBound}.</p>` +
     `<table><thead><tr><th>#</th><th>Medidor</th><th>Correlación</th></tr></thead><tbody>` +
     candidates.map((c, i) => `<tr><td>${i + 1}</td><td>${c.meterId}</td><td>${c.correlation.toFixed(3)}</td></tr>`).join('') +
     `</tbody></table>`;
@@ -299,6 +308,10 @@ function showCandidates(trafoId: string): void {
 function renderTree(roots: { id: string; children: { id: string }[] }[]): void {
   const el = $('mapa') as HTMLDivElement;
   el.innerHTML = '';
+  if (roots.length === 0) {
+    el.innerHTML = '<p class="hint">Aparecerá al cargar el archivo de topología.</p>';
+    return;
+  }
 
   for (const r of roots.slice(0, 12)) {
     const b = document.createElement('button');
@@ -306,7 +319,7 @@ function renderTree(roots: { id: string; children: { id: string }[] }[]): void {
     b.onclick = () => {
       el.querySelectorAll('button').forEach((x) => x.classList.remove('sel'));
       b.classList.add('sel');
-      $('consulta').textContent = `Subárbol ${r.id} · energía horas [0, 719]: cálculo O(1) por sumas prefijas (ver RF-4).`;
+      $('consulta').textContent = `Total de ${r.id} en el mes (horas 0 a 719).`;
     };
     el.appendChild(b);
     el.appendChild(document.createElement('br'));
@@ -343,11 +356,11 @@ function renderTable(filter = ''): void {
 
 function renderPerf(): void {
   const s = perf.snapshot();
-  $('rendimiento').innerHTML =
-    `INP: <b>${s.inp === null ? '—' : s.inp.toFixed(1) + ' ms'}</b> ` +
-    (s.inpBreakdown ? `(retardo ${s.inpBreakdown.inputDelay.toFixed(1)} · proceso ${s.inpBreakdown.processing.toFixed(1)} · presentación ${s.inpBreakdown.presentation.toFixed(1)})` : '(interactúa para medir)') +
-    ` · Tareas largas: <b>${s.longTasks}</b> (${s.longTasksTotalMs.toFixed(0)} ms) · Procesamiento total: <b>${s.processingMs === null ? '—' : (s.processingMs / 1000).toFixed(1) + ' s'}</b> ` +
-    `· crossOriginIsolated: <b class="${window.crossOriginIsolated ? 'pill-ok' : 'pill-bad'}">${window.crossOriginIsolated}</b>`;
+  const parts = [];
+  parts.push(`Tiempo de análisis: <b>${s.processingMs === null ? '—' : (s.processingMs / 1000).toFixed(1) + ' s'}</b>`);
+  parts.push(`Respuesta de la página: <b>${s.inp === null ? '—' : s.inp.toFixed(0) + ' ms'}</b>`);
+  parts.push(`Interrupciones largas: <b>${s.longTasks}</b>`);
+  $('rendimiento').innerHTML = parts.join(' · ');
 }
 
 export function initApp(): void {
@@ -361,13 +374,13 @@ export function initApp(): void {
   }
 
   $('btn-demo')?.addEventListener('click', async () => {
-    log('Generando muestra sintética (2 000 medidores, fraudes sembrados conocidos)…');
+    log('Generando datos de ejemplo (2 000 medidores)…');
     const synth = generateSynthetic({
       meters: 2000,
       seed: 7,
       frauds: [{ trafo: 3, meter: 5, startHour: 240, endHour: 480, magnitude: 0.45 }],
     });
-    log(`Muestra: ${synth.expectedRows.toLocaleString('es')} filas exactas (conteo conocido, RF-1).`);
+    log(`Datos de ejemplo: ${synth.expectedRows.toLocaleString('es')} lecturas.`);
     const file = new File([synth.readings], 'lecturas_mes.csv', { type: 'text/csv' });
     const monthStart = 1767225600;
     const { meters, rows } = await processReadings(file, monthStart);
@@ -376,35 +389,38 @@ export function initApp(): void {
     const topo = new Blob([synth.topology], { type: 'text/csv' }) as unknown as File;
     (topo as File & { name: string }).name = 'topologia.csv';
     await processTopology(topo as File, monthStart);
-    log(`Fraudes sembrados: ${JSON.stringify(synth.seededFrauds)} — verifica que el ranking los capture.`);
+    log(`Ejemplo listo: revisa el plan de inspección.`);
   });
 
-  $('btn-procesar')?.addEventListener('click', async () => {
-    const fLec = ($('file-lecturas') as HTMLInputElement).files?.[0];
-    const fTop = ($('file-topologia') as HTMLInputElement).files?.[0];
-    if (!fLec) {
-      log('Selecciona primero el archivo lecturas_mes.csv.');
-      return;
-    }
-    const btn = $('btn-procesar') as HTMLButtonElement;
-    btn.disabled = true;
-    try {
-      const monthStart = Number(($('mes-inicio') as HTMLInputElement).value) || 1767225600;
-      await processReadings(fLec, monthStart);
-      if (fTop) await processTopology(fTop, monthStart);
-      else log('Sin topología: ranking pendiente de la agregación jerárquica.');
-    } catch (err) {
-      log(`Error: ${(err as Error).message}`);
-    } finally {
-      btn.disabled = false;
-    }
+/** Classify a CSV by its header: readings, topology, or unknown. */
+async function classifyFile(file: File): Promise<'lecturas' | 'topologia' | null> {
+  const head = await file.slice(0, 4096).text();
+  const first = head.split('\n', 1)[0].trim().toLowerCase();
+  if (first.startsWith('meter_id')) return 'lecturas';
+  if (first.startsWith('nodo_id')) return 'topologia';
+  return null;
+}
+
+function kindLabel(kind: 'lecturas' | 'topologia'): string {
+  return kind === 'lecturas' ? 'lecturas' : 'topología de la red';
+}
+
+function refreshFileList(files: File[], kinds: (('lecturas' | 'topologia' | null))[]): void {
+  const ul = $('archivos') as HTMLUListElement;
+  ul.innerHTML = '';
+  files.forEach((f, i) => {
+    const li = document.createElement('li');
+    const k = kinds[i];
+    li.innerHTML = `<b>${f.name}</b> — ${k ? `detectado como ${kindLabel(k)}` : 'no se reconoció el formato (debe empezar con meter_id o nodo_id)'}`;
+    ul.appendChild(li);
   });
+}
 
   $('btn-sample')?.addEventListener('click', async () => {
     const btn = $('btn-sample') as HTMLButtonElement;
     btn.disabled = true;
     try {
-      log('Descargando muestra incluida del sitio (200 medidores, ~145 000 filas)…');
+      log('Cargando los datos de ejemplo incluidos en la página…');
       const monthStart = Number(($('mes-inicio') as HTMLInputElement).value) || 1767225600;
       const [lecBlob, topBlob] = await Promise.all([
         fetch('samples/lecturas_mes.csv').then((r) => {
@@ -420,7 +436,47 @@ export function initApp(): void {
       const top = new File([topBlob], 'topologia.csv', { type: 'text/csv' });
       await processReadings(lec, monthStart);
       await processTopology(top, monthStart);
-      log('Muestra incluida procesada: verifica que el ranking capture el fraude sembrado (medidor 5, magnitud 0,45).');
+      log('Datos de ejemplo listos: revisa el plan de inspección.');
+    } catch (err) {
+      log(`Error: ${(err as Error).message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // Generic picker: one or several CSVs, each auto-detected by header.
+  // Readings alone show the readings table; topology alone shows the map;
+  // together they produce the full weekly inspection plan.
+  let picked: File[] = [];
+  let pickedKinds: (('lecturas' | 'topologia' | null))[] = [];
+
+  $('file-csv')?.addEventListener('change', async (e) => {
+    picked = [...((e.target as HTMLInputElement).files ?? [])];
+    pickedKinds = [];
+    for (const f of picked) pickedKinds.push(await classifyFile(f));
+    refreshFileList(picked, pickedKinds);
+  });
+
+  $('btn-procesar')?.addEventListener('click', async () => {
+    const lecturas = picked.filter((_, i) => pickedKinds[i] === 'lecturas');
+    const topologia = picked.filter((_, i) => pickedKinds[i] === 'topologia');
+    if (lecturas.length === 0 && topologia.length === 0) {
+      log('Elige primero uno o varios archivos CSV (lecturas o topología).');
+      return;
+    }
+    const btn = $('btn-procesar') as HTMLButtonElement;
+    btn.disabled = true;
+    try {
+      const monthStart = Number(($('mes-inicio') as HTMLInputElement).value) || 1767225600;
+      if (lecturas.length > 0) {
+        for (const f of lecturas) await processReadings(f, monthStart);
+        renderTable();
+      }
+      if (topologia.length > 0) {
+        for (const f of topologia) await processTopology(f, monthStart);
+      } else if (lecturas.length > 0) {
+        log('Solo hay lecturas: verás la tabla. Agrega la topología para el plan completo.');
+      }
     } catch (err) {
       log(`Error: ${(err as Error).message}`);
     } finally {
@@ -429,13 +485,13 @@ export function initApp(): void {
   });
 
   $('btn-bench')?.addEventListener('click', async () => {
-    log('Midiendo transferencia vs copia estructurada (3 tamaños)…');
+    log('Midiendo velocidad de transferencia (3 tamaños)…');
     const rowsBench = await benchPostMessage();
     $('bench').innerHTML =
       `<table><thead><tr><th>Tamaño</th><th>Transferencia</th><th>Copia</th><th>Aceleración</th></tr></thead><tbody>` +
       rowsBench.map((r) => `<tr><td>${(r.bytes / 1024).toFixed(0)} KB</td><td>${r.transferMs.toFixed(2)} ms</td><td>${r.cloneMs.toFixed(2)} ms</td><td>×${r.speedup.toFixed(1)}</td></tr>`).join('') +
       `</tbody></table>`;
-    log('Medición lista (RT-3).');
+    log('Medición lista.');
   });
 
   $('filtro')?.addEventListener('input', (e) => {

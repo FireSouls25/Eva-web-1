@@ -39,6 +39,6 @@ export function rankCandidates(
   const m = profiles.size;
   return {
     candidates: out.slice(0, limit),
-    costBound: `O(M·H) = ${m} medidores × ${hours} horas = ${(m * hours).toLocaleString('es')} mult-sumas`,
+    costBound: `Comparación de ${m} medidores × ${hours} horas`,
   };
 }

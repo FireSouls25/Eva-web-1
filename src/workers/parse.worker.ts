@@ -24,17 +24,13 @@ export interface ParseResponse {
   rowCount: number;
 }
 
-function findLineEnd(text: string, from: number): number {
-  const i = text.indexOf('\n', from);
-  return i === -1 ? text.length : i + 1;
-}
-
 self.onmessage = (ev: MessageEvent<ParseRequest>) => {
   const msg = ev.data;
   if (msg.kind !== 'parse') return;
   const control = new Int32Array(msg.sab);
   const bytes = new Uint8Array(msg.fileSab);
   const decoder = new TextDecoder();
+  
   for (;;) {
     const blockIndex = Atomics.add(control, 0, 1);
     if (blockIndex >= msg.blocks.length) break;
@@ -46,11 +42,14 @@ self.onmessage = (ev: MessageEvent<ParseRequest>) => {
       while (start < msg.fileSize && bytes[start] !== 0x0a) start++;
       start = start < msg.fileSize ? start + 1 : msg.fileSize;
     }
+
     while (end < msg.fileSize && bytes[end] !== 0x0a) end++;
     if (end < msg.fileSize) end++;
-    const slice = bytes.subarray(start, end);
+    // TextDecoder refuses views over SharedArrayBuffer, so copy the slice
+    // into a fresh (non-shared) buffer first. The copy is block-sized and
+    // cheap compared to parsing the lines it contains.
+    const slice = new Uint8Array(bytes.subarray(start, end));
     const text = decoder.decode(slice);
-    void findLineEnd;
     const rows: ParseRow[] = [];
     let pos = 0;
     
@@ -63,12 +62,13 @@ self.onmessage = (ev: MessageEvent<ParseRequest>) => {
       if (nl === -1) nl = text.length;
       const line = text.slice(pos, nl);
       pos = nl + 1;
-      
+
       if (!line) continue;
       const c1 = line.indexOf(',');
       const c2 = line.indexOf(',', c1 + 1);
       const c3 = line.indexOf(',', c2 + 1);
       const c4 = line.indexOf(',', c3 + 1);
+
       if (c1 === -1 || c2 === -1 || c3 === -1 || c4 === -1) continue;
       const meterHex = line.slice(0, c1);
       const ts = Number(line.slice(c1 + 1, c2));
@@ -76,6 +76,7 @@ self.onmessage = (ev: MessageEvent<ParseRequest>) => {
       const version = Number(line.slice(c3 + 1, c4));
       const flags = Number(line.slice(c4 + 1));
       const hour = Math.floor((ts - msg.monthStartEpoch) / 3600);
+
       if (hour < 0 || hour >= 720) continue;
       rows.push({
         meterHex,
